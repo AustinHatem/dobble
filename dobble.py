@@ -3,6 +3,8 @@ import math
 import random
 import tempfile
 import os
+import io
+from PIL import Image
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import cm
@@ -17,56 +19,69 @@ class DobbleGenerator:
         cards_per_row=2,
         cards_per_col=2,
         symbols_per_card=6,
+        use_custom_images=False,
+        custom_images=None,
     ):
         self.output_pdf = output_pdf
         self.cards_per_row = cards_per_row
         self.cards_per_col = cards_per_col
         self.symbols_per_card = symbols_per_card
+        self.use_custom_images = use_custom_images
+        self.custom_images = custom_images or []
 
         self.order = self.symbols_per_card - 1
         self.total_symbols_needed = self.order**2 + self.order + 1
 
-        self.shapes = [
-            "circle",
-            "square",
-            "triangle",
-            "star",
-            "heart",
-            "diamond",
-            "pentagon",
-            "hexagon",
-        ]
+        # Default shapes and colors if not using custom images
+        if not self.use_custom_images:
+            self.shapes = [
+                "circle",
+                "square",
+                "triangle",
+                "star",
+                "heart",
+                "diamond",
+                "pentagon",
+                "hexagon",
+            ]
 
-        self.colors = [
-            colors.red,
-            colors.blue,
-            colors.green,
-            colors.orange,
-            colors.purple,
-            colors.yellow,
-            colors.pink,
-            colors.brown,
-            colors.black,
-            colors.gray,
-        ]
+            self.colors = [
+                colors.red,
+                colors.blue,
+                colors.green,
+                colors.orange,
+                colors.purple,
+                colors.yellow,
+                colors.pink,
+                colors.brown,
+                colors.black,
+                colors.gray,
+            ]
 
-        # Generate exactly N visually unique shape-color combinations
-        self.symbols = []
-        used_combinations = set()
-        for shape in self.shapes:
-            for color in self.colors:
-                if (shape, color) not in used_combinations:
-                    self.symbols.append((shape, color))
-                    used_combinations.add((shape, color))
+            # Generate exactly N visually unique shape-color combinations
+            self.symbols = []
+            used_combinations = set()
+            for shape in self.shapes:
+                for color in self.colors:
+                    if (shape, color) not in used_combinations:
+                        self.symbols.append((shape, color))
+                        used_combinations.add((shape, color))
+                    if len(self.symbols) == self.total_symbols_needed:
+                        break
                 if len(self.symbols) == self.total_symbols_needed:
                     break
-            if len(self.symbols) == self.total_symbols_needed:
-                break
 
-        if len(self.symbols) < self.total_symbols_needed:
-            raise ValueError(
-                "Not enough unique shape-color combinations to generate a valid Dobble deck."
-            )
+            if len(self.symbols) < self.total_symbols_needed:
+                raise ValueError(
+                    "Not enough unique shape-color combinations to generate a valid Dobble deck."
+                )
+        else:
+            # Use custom images as symbols
+            if len(self.custom_images) < self.total_symbols_needed:
+                raise ValueError(
+                    f"Not enough custom images. Need at least {self.total_symbols_needed} images."
+                )
+            self.symbols = self.custom_images[: self.total_symbols_needed]
 
     def generate_dobble_cards(self):
         """
@@ -252,7 +267,7 @@ class DobbleGenerator:
         random.shuffle(combined)
         positions, sizes = zip(*combined)
 
-        for i, (shape, color) in enumerate(symbols):
+        for i, symbol in enumerate(symbols):
             if i >= len(positions):
                 break
             rel_x, rel_y = positions[i]
@@ -261,9 +276,49 @@ class DobbleGenerator:
             center_x = x + rel_x * width
             center_y = y + rel_y * height
 
-            self._draw_shape(
-                canvas, shape, color, center_x, center_y, symbol_size, rotations[i]
-            )
+            if self.use_custom_images:
+                # Symbol is an image
+                self._draw_image(
+                    canvas, symbol, center_x, center_y, symbol_size, rotations[i]
+                )
+            else:
+                # Symbol is a (shape, color) tuple
+                shape, color = symbol
+                self._draw_shape(
+                    canvas, shape, color, center_x, center_y, symbol_size, rotations[i]
+                )
+
+    def _draw_image(self, canvas, image_data, x, y, size, rotation=0):
+        """Draw a custom image on the canvas"""
+        canvas.saveState()
+        canvas.translate(x, y)
+        canvas.rotate(rotation)
+
+        # Size is the diameter/width of the symbol
+        half_size = size / 2
+
+        # ReportLab expects an image path or a PIL Image
+        # Since we have the image data from memory, we'll create a temp file
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as temp_file:
+            temp_filename = temp_file.name
+
+        # Save the PIL image to the temp file
+        image_data.save(temp_filename, format="PNG")
+
+        # Draw the image centered at the position
+        canvas.drawImage(
+            temp_filename,
+            -half_size,  # x position (centered)
+            -half_size,  # y position (centered)
+            size,  # width
+            size,  # height
+            mask="auto",  # handles transparency
+        )
+
+        # Clean up the temp file
+        os.unlink(temp_filename)
+
+        canvas.restoreState()
 
     def _draw_shape(self, canvas, shape, color, x, y, size, rotation=0):
         canvas.saveState()
@@ -344,6 +399,31 @@ def get_pdf_download_link(pdf_path, filename):
     return href
 
 
+# Function to preprocess uploaded images
+def preprocess_image(uploaded_file):
+    """Process the uploaded image to prepare it for the Dobble card"""
+    image = Image.open(uploaded_file)
+
+    # Convert to RGBA if not already
+    if image.mode != "RGBA":
+        image = image.convert("RGBA")
+
+    # Make the image square by cropping or padding
+    width, height = image.size
+    size = max(width, height)
+    new_img = Image.new("RGBA", (size, size), (255, 255, 255, 0))
+
+    # Paste the original image centered in the new square image
+    paste_x = (size - width) // 2
+    paste_y = (size - height) // 2
+    new_img.paste(image, (paste_x, paste_y))
+
+    # Resize to a standard size for consistency
+    new_img = new_img.resize((300, 300), Image.LANCZOS)
+
+    return new_img
+
+
 # Streamlit app
 def main():
     st.set_page_config(page_title="Dobble Card Generator", layout="centered")
@@ -351,10 +431,85 @@ def main():
     st.title("Dobble Card Generator")
     st.write("Create custom Dobble (Spot It) cards to print yourself!")
 
+    # Mode selection
+    mode = st.radio(
+        "Choose card type",
+        ["Default Shapes and Colors", "Custom Images"],
+        index=0,
+    )
+
+    use_custom_images = mode == "Custom Images"
+
+    # Custom images section
+    uploaded_images = []
+    if use_custom_images:
+        st.write("### Upload Custom Images")
+        st.write(
+            "For the best results, upload square images with transparent backgrounds."
+        )
+
+        # Calculate how many images are needed
+        col1, col2 = st.columns(2)
+        with col1:
+            symbols_per_card = st.selectbox(
+                "Symbols Per Card",
+                options=[3, 4, 6, 8, 12],
+                index=2,  # Default to 6 symbols per card
+            )
+
+        order = symbols_per_card - 1
+        total_symbols_needed = order**2 + order + 1
+
+        st.write(f"You need to upload at least **{total_symbols_needed}** images.")
+
+        # Create file uploader
+        uploaded_files = st.file_uploader(
+            "Upload your images",
+            type=["png", "jpg", "jpeg", "gif", "bmp"],
+            accept_multiple_files=True,
+        )
+
+        if uploaded_files:
+            # Process the images
+            for file in uploaded_files:
+                processed_img = preprocess_image(file)
+                uploaded_images.append(processed_img)
+
+            # Show how many images are uploaded
+            if len(uploaded_images) < total_symbols_needed:
+                st.warning(
+                    f"You've uploaded {len(uploaded_images)} images. You need at least {total_symbols_needed} images."
+                )
+            else:
+                st.success(
+                    f"You've uploaded {len(uploaded_images)} images. That's enough to generate your cards!"
+                )
+
+            # Show the images in a grid
+            cols = st.columns(5)  # 5 images per row
+            for i, img in enumerate(uploaded_images[:15]):  # Show just the first 15
+                with cols[i % 5]:
+                    # Convert PIL Image to bytes for display
+                    buf = io.BytesIO()
+                    img.save(buf, format="PNG")
+                    byte_im = buf.getvalue()
+                    st.image(byte_im, width=100)
+
+            if len(uploaded_images) > 15:
+                st.write(f"... and {len(uploaded_images) - 15} more images")
+
     # Create a form for user input
     with st.form("dobble_form"):
-        col1, col2 = st.columns(2)
+        if not use_custom_images:
+            col1, col2 = st.columns(2)
+            with col1:
+                symbols_per_card = st.selectbox(
+                    "Symbols Per Card",
+                    options=[3, 4, 6, 8, 12],
+                    index=2,  # Default to 6 symbols per card
+                )
 
+        col1, col2 = st.columns(2)
         with col1:
             cards_per_row = st.number_input(
                 "Cards Per Row", min_value=1, max_value=4, value=2, step=1
@@ -365,12 +520,6 @@ def main():
                 "Cards Per Column", min_value=1, max_value=4, value=2, step=1
             )
 
-        symbols_per_card = st.selectbox(
-            "Symbols Per Card",
-            options=[3, 4, 6, 8, 12],
-            index=2,  # Default to 6 symbols per card
-        )
-
         output_filename = st.text_input("Output Filename", value="dobble_cards.pdf")
 
         # Add a submit button
@@ -378,6 +527,17 @@ def main():
 
     # Generate the cards when the user submits the form
     if submit_button:
+        # Check if we have enough images when using custom images
+        if use_custom_images:
+            order = symbols_per_card - 1
+            total_symbols_needed = order**2 + order + 1
+
+            if len(uploaded_images) < total_symbols_needed:
+                st.error(
+                    f"Not enough images! You need at least {total_symbols_needed} images, but you've only uploaded {len(uploaded_images)}."
+                )
+                return
+
         with st.spinner("Generating Dobble cards..."):
             # Create a temporary file for the PDF
             temp_dir = tempfile.gettempdir()
@@ -390,6 +550,8 @@ def main():
                     cards_per_row=cards_per_row,
                     cards_per_col=cards_per_col,
                     symbols_per_card=symbols_per_card,
+                    use_custom_images=use_custom_images,
+                    custom_images=uploaded_images if use_custom_images else None,
                 )
 
                 success, message = generator.create_dobble_pdf()
