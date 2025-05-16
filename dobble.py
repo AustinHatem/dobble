@@ -4,84 +4,61 @@ import random
 import tempfile
 import os
 import io
+import json
+import uuid
+import datetime
 from PIL import Image
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import cm
-from reportlab.lib import colors
 import base64
+import pyrebase
+import itertools
+
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv()
+except ImportError:
+    pass
+
+
+def get_env(key: str) -> str:
+    # Only access st.secrets if .streamlit/secrets.toml exists
+    secrets_path = os.path.join(os.getcwd(), ".streamlit", "secrets.toml")
+    if os.path.exists(secrets_path):
+        return st.secrets.get(key)
+
+    # Otherwise load from .env
+    value = os.getenv(key)
+    if not value:
+        st.error(f"❌ Missing environment variable: {key}")
+    return value
 
 
 class DobbleGenerator:
     def __init__(
         self,
         output_pdf="dobble_cards.pdf",
-        cards_per_row=2,
-        cards_per_col=2,
         symbols_per_card=6,
-        use_custom_images=False,
         custom_images=None,
     ):
         self.output_pdf = output_pdf
-        self.cards_per_row = cards_per_row
-        self.cards_per_col = cards_per_col
+        # Fixed values for cards per row/column
+        self.cards_per_row = 2
+        self.cards_per_col = 2
         self.symbols_per_card = symbols_per_card
-        self.use_custom_images = use_custom_images
         self.custom_images = custom_images or []
 
         self.order = self.symbols_per_card - 1
         self.total_symbols_needed = self.order**2 + self.order + 1
 
-        # Default shapes and colors if not using custom images
-        if not self.use_custom_images:
-            self.shapes = [
-                "circle",
-                "square",
-                "triangle",
-                "star",
-                "heart",
-                "diamond",
-                "pentagon",
-                "hexagon",
-            ]
-
-            self.colors = [
-                colors.red,
-                colors.blue,
-                colors.green,
-                colors.orange,
-                colors.purple,
-                colors.yellow,
-                colors.pink,
-                colors.brown,
-                colors.black,
-                colors.gray,
-            ]
-
-            # Generate exactly N visually unique shape-color combinations
-            self.symbols = []
-            used_combinations = set()
-            for shape in self.shapes:
-                for color in self.colors:
-                    if (shape, color) not in used_combinations:
-                        self.symbols.append((shape, color))
-                        used_combinations.add((shape, color))
-                    if len(self.symbols) == self.total_symbols_needed:
-                        break
-                if len(self.symbols) == self.total_symbols_needed:
-                    break
-
-            if len(self.symbols) < self.total_symbols_needed:
-                raise ValueError(
-                    "Not enough unique shape-color combinations to generate a valid Dobble deck."
-                )
-        else:
-            # Use custom images as symbols
-            if len(self.custom_images) < self.total_symbols_needed:
-                raise ValueError(
-                    f"Not enough custom images. Need at least {self.total_symbols_needed} images."
-                )
-            self.symbols = self.custom_images[: self.total_symbols_needed]
+        # Validate enough images are available
+        if len(self.custom_images) < self.total_symbols_needed:
+            raise ValueError(
+                f"Not enough custom images. Need at least {self.total_symbols_needed} images."
+            )
+        self.symbols = self.custom_images[: self.total_symbols_needed]
 
     def generate_dobble_cards(self):
         """
@@ -214,79 +191,41 @@ class DobbleGenerator:
         )
 
     def _draw_card_symbols(self, canvas, symbols, x, y, width, height):
-        # Define appropriate positions based on number of symbols per card
-        if self.symbols_per_card == 6:
-            positions = [
-                (0.25, 0.8),
-                (0.75, 0.8),
-                (0.15, 0.5),
-                (0.5, 0.5),
-                (0.85, 0.5),
-                (0.5, 0.2),
-            ]
-            sizes = [0.15, 0.15, 0.15, 0.2, 0.15, 0.15]
-        elif self.symbols_per_card == 8:
-            positions = [
-                (0.25, 0.8),
-                (0.75, 0.8),
-                (0.15, 0.6),
-                (0.5, 0.65),
-                (0.85, 0.6),
-                (0.2, 0.3),
-                (0.5, 0.25),
-                (0.8, 0.3),
-            ]
-            sizes = [0.12, 0.12, 0.12, 0.15, 0.12, 0.12, 0.15, 0.12]
-        else:
-            # For any other number of symbols, generate positions in a circle
-            positions = []
-            center_size = 0.2  # Size of center symbol
-            outer_sizes = [0.15] * (self.symbols_per_card - 1)  # Size of outer symbols
+        # Maximize symbol size without overlap
+        symbols_per_card = len(symbols)
 
-            # Add center position
+        # Choose a generous size factor
+        size_factor = 0.27  # Try 0.3 or higher if fewer symbols per card
+
+        # Positioning in a circle
+        positions = []
+        sizes = []
+
+        if symbols_per_card == 1:
             positions.append((0.5, 0.5))
-            sizes = [center_size]
+            sizes.append(size_factor * 1.2)
+        else:
+            radius = 0.35  # Controls how far symbols are from center
+            for i in range(symbols_per_card):
+                angle = 2 * math.pi * i / symbols_per_card
+                pos_x = 0.5 + radius * math.cos(angle)
+                pos_y = 0.5 + radius * math.sin(angle)
+                positions.append((pos_x, pos_y))
+                sizes.append(size_factor)
 
-            # Add positions in a circle
-            radius = 0.3
-            for i in range(self.symbols_per_card - 1):
-                angle = 2 * math.pi * i / (self.symbols_per_card - 1)
-                x_pos = 0.5 + radius * math.cos(angle)
-                y_pos = 0.5 + radius * math.sin(angle)
-                positions.append((x_pos, y_pos))
-                sizes.extend(outer_sizes)
-
-        # Cut positions if there are more than symbols
-        positions = positions[: len(symbols)]
-        sizes = sizes[: len(symbols)]
-
+        # Randomize positions to add variety
         rotations = [random.randint(0, 359) for _ in range(len(symbols))]
-
-        # Randomize symbol positions
         combined = list(zip(positions, sizes))
         random.shuffle(combined)
         positions, sizes = zip(*combined)
 
+        # Draw each image
         for i, symbol in enumerate(symbols):
-            if i >= len(positions):
-                break
             rel_x, rel_y = positions[i]
-            size_factor = sizes[i]
-            symbol_size = min(width, height) * size_factor
+            size = min(width, height) * sizes[i]
             center_x = x + rel_x * width
             center_y = y + rel_y * height
-
-            if self.use_custom_images:
-                # Symbol is an image
-                self._draw_image(
-                    canvas, symbol, center_x, center_y, symbol_size, rotations[i]
-                )
-            else:
-                # Symbol is a (shape, color) tuple
-                shape, color = symbol
-                self._draw_shape(
-                    canvas, shape, color, center_x, center_y, symbol_size, rotations[i]
-                )
+            self._draw_image(canvas, symbol, center_x, center_y, size, rotations[i])
 
     def _draw_image(self, canvas, image_data, x, y, size, rotation=0):
         """Draw a custom image on the canvas"""
@@ -320,83 +259,48 @@ class DobbleGenerator:
 
         canvas.restoreState()
 
-    def _draw_shape(self, canvas, shape, color, x, y, size, rotation=0):
-        canvas.saveState()
-        canvas.setFillColor(color)
-        canvas.setStrokeColor(colors.black)
-        canvas.setLineWidth(1)
-        canvas.translate(x, y)
-        if shape != "circle":
-            canvas.rotate(rotation)
-        half_size = size / 2
 
-        if shape == "circle":
-            canvas.circle(0, 0, half_size, fill=1)
-        elif shape == "square":
-            canvas.rect(-half_size, -half_size, size, size, fill=1)
-        elif shape == "triangle":
-            height = size * math.sqrt(3) / 2
-            points = [
-                (-half_size, -height / 3),
-                (half_size, -height / 3),
-                (0, height * 2 / 3),
-            ]
-            self._draw_polygon(canvas, points, fill=1)
-        elif shape == "star":
-            points = []
-            outer_radius = half_size
-            inner_radius = half_size * 0.4
-            for i in range(10):
-                radius = outer_radius if i % 2 == 0 else inner_radius
-                angle = math.pi / 2 + 2 * math.pi * i / 10
-                points.append((radius * math.cos(angle), radius * math.sin(angle)))
-            self._draw_polygon(canvas, points, fill=1)
-        elif shape == "heart":
-            r = half_size * 0.6
-            canvas.circle(-r, r, r, fill=1)
-            canvas.circle(r, r, r, fill=1)
-            points = [(-2 * r, r), (0, -2.5 * r), (2 * r, r)]
-            self._draw_polygon(canvas, points, fill=1)
-        elif shape == "diamond":
-            points = [(0, half_size), (half_size, 0), (0, -half_size), (-half_size, 0)]
-            self._draw_polygon(canvas, points, fill=1)
-        elif shape == "pentagon":
-            points = []
-            for i in range(5):
-                angle = math.pi / 2 + 2 * math.pi * i / 5
-                points.append(
-                    (half_size * math.cos(angle), half_size * math.sin(angle))
-                )
-            self._draw_polygon(canvas, points, fill=1)
-        elif shape == "hexagon":
-            points = []
-            for i in range(6):
-                angle = 2 * math.pi * i / 6
-                points.append(
-                    (half_size * math.cos(angle), half_size * math.sin(angle))
-                )
-            self._draw_polygon(canvas, points, fill=1)
-        canvas.restoreState()
+# Helper function to check if two PIL images are similar
+def similar_images(img1, img2):
+    """
+    Check if two PIL images are the same image.
+    Returns True if images are similar, False otherwise.
+    """
+    # Convert to RGB if they're not
+    if img1.mode != "RGB":
+        img1 = img1.convert("RGB")
+    if img2.mode != "RGB":
+        img2 = img2.convert("RGB")
 
-    def _draw_polygon(self, canvas, points, fill=1):
-        path = canvas.beginPath()
-        path.moveTo(points[0][0], points[0][1])
-        for x, y in points[1:]:
-            path.lineTo(x, y)
-        path.close()
-        canvas.drawPath(path, fill=fill, stroke=1)
+    # Resize to a small size for quicker comparison
+    size = (20, 20)
+    img1_small = img1.resize(size)
+    img2_small = img2.resize(size)
+
+    # Get the image data
+    img1_data = list(img1_small.getdata())
+    img2_data = list(img2_small.getdata())
+
+    # Compare image data directly
+    return img1_data == img2_data
 
 
-# Function to create a download link for the PDF
-def get_pdf_download_link(pdf_path, filename):
-    """Generate a link to download the pdf file"""
+# Function to create a download button for the PDF
+def get_binary_file_downloader_html(pdf_path, filename):
+    """Generate a button to download the pdf file"""
     with open(pdf_path, "rb") as file:
         pdf_contents = file.read()
 
     b64_pdf = base64.b64encode(pdf_contents).decode()
-    href = f'<a href="data:application/pdf;base64,{b64_pdf}" download="{filename}">Download the PDF</a>'
-
-    return href
+    download_button_html = f"""
+        <a href="data:application/pdf;base64,{b64_pdf}" download="{filename}">
+            <button style="background-color: #4CAF50; color: white; padding: 12px 20px; 
+            border: none; border-radius: 4px; cursor: pointer; font-size: 16px;">
+                Download PDF
+            </button>
+        </a>
+    """
+    return download_button_html
 
 
 # Function to preprocess uploaded images
@@ -424,38 +328,389 @@ def preprocess_image(uploaded_file):
     return new_img
 
 
+# Check if pyrebase4 is installed, and install if necessary
+def check_and_install_dependencies():
+    try:
+        import pyrebase
+    except ImportError:
+        import subprocess
+        import sys
+
+        st.warning("Installing required dependencies...")
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "pyrebase4"])
+        st.success("Dependencies installed successfully!")
+        import pyrebase
+
+
+def delete_game_from_firebase(storage, db, game_id, image_urls):
+    """
+    Delete game images from Firebase Storage and metadata from the database.
+
+    This version focuses on deleting the database record first, which is more
+    reliable. Since the Storage deletion is causing issues with the Pyrebase library,
+    we'll make a best effort to delete images but not fail the entire operation if
+    they can't be deleted.
+    """
+    try:
+        # First, remove game metadata from database
+        # This ensures that at least the game entry is removed
+        db.child("games").child(game_id).remove()
+
+        # At this point, we've successfully deleted the database entry
+        # Return success even if we can't delete the images
+        return (
+            True,
+            f"Successfully deleted game '{game_id}' from database. Note: Associated images may still exist in storage.",
+        )
+
+    except Exception as e:
+        # If database deletion fails, return the error
+        return False, f"Error deleting game '{game_id}' from database: {str(e)}"
+
+
+def initialize_firebase():
+
+    firebaseConfig = {
+        "apiKey": get_env("FIREBASE_API_KEY"),
+        "authDomain": get_env("FIREBASE_AUTH_DOMAIN"),
+        "projectId": get_env("FIREBASE_PROJECT_ID"),
+        "storageBucket": get_env("FIREBASE_STORAGE_BUCKET"),
+        "messagingSenderId": get_env("FIREBASE_MESSAGING_SENDER_ID"),
+        "appId": get_env("FIREBASE_APP_ID"),
+        "measurementId": get_env("FIREBASE_MEASUREMENT_ID"),
+        "databaseURL": get_env("FIREBASE_DATABASE_URL"),
+    }
+
+    firebase = pyrebase.initialize_app(firebaseConfig)
+    auth = firebase.auth()
+    auth.sign_in_anonymous()
+    storage = firebase.storage()
+    db = firebase.database()
+
+    return storage, db
+
+
+# Function to save image to Firebase Storage
+def save_image_to_firebase(storage, image, game_id, image_id):
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as temp_file:
+        temp_filename = temp_file.name
+        image.save(temp_filename, format="PNG")
+
+    storage_path = f"games/{game_id}/images/{image_id}.png"
+
+    # Try uploading
+    try:
+        storage.child(storage_path).put(temp_filename)
+        download_url = storage.child(storage_path).get_url(None)
+    except Exception as e:
+        os.unlink(temp_filename)
+        raise RuntimeError(f"Failed to upload image to Firebase: {e}")
+
+    os.unlink(temp_filename)
+    return download_url
+
+
+# Function to save game metadata to Firebase
+def save_game_to_firebase(db, game_id, game_data):
+    db.child("games").child(game_id).set(game_data)
+
+
+# Function to get all saved games from Firebase
+def get_saved_games(db):
+    games = db.child("games").get()
+    if games.each():
+        return [game.val() for game in games.each()]
+    return []
+
+
+# Function to download image from URL
+def download_image_from_url(url):
+    try:
+        import requests
+        from io import BytesIO
+
+        response = requests.get(url)
+        if response.status_code == 200:
+            return Image.open(BytesIO(response.content))
+        else:
+            # Return placeholder image if download fails
+            return Image.new("RGBA", (300, 300), color=(255, 0, 0, 128))
+    except Exception as e:
+        st.warning(f"Error downloading image: {str(e)}")
+        # Return placeholder image if download fails
+        return Image.new("RGBA", (300, 300), color=(255, 0, 0, 128))
+
+
+# Function to generate a PDF for a saved game
+def generate_pdf_for_saved_game(storage, game_data):
+    # Get image download URLs from game data
+    image_urls = game_data.get("image_urls", [])
+
+    # Download images from URLs
+    with st.spinner("Downloading images..."):
+        temp_images = []
+        for url in image_urls:
+            img = download_image_from_url(url)
+            temp_images.append(img)
+
+    # Use the DobbleGenerator to create a PDF
+    temp_dir = tempfile.gettempdir()
+    output_filename = f"{game_data['title']}.pdf"
+    output_path = os.path.join(temp_dir, output_filename)
+
+    try:
+        # Generate the cards using the same number of symbols per card as stored
+        generator = DobbleGenerator(
+            output_pdf=output_path,
+            symbols_per_card=game_data["symbols_per_card"],
+            custom_images=temp_images[: game_data["total_symbols_needed"]],
+        )
+
+        success, _ = generator.create_dobble_pdf()
+        if success:
+            return output_path, output_filename
+        else:
+            return None, None
+    except Exception as e:
+        st.error(f"Error generating PDF: {str(e)}")
+        return None, None
+
+
+# Add a new function to generate card images for the game
+def generate_game_cards(game_data, num_cards=None):
+    """
+    Generate card images for playing the game.
+    Returns a list of PIL images representing the cards.
+    """
+    # Get image download URLs from game data
+    image_urls = game_data.get("image_urls", [])
+    symbols_per_card = game_data.get("symbols_per_card", 6)
+    order = symbols_per_card - 1
+    total_symbols_needed = order**2 + order + 1
+
+    # Download images from URLs
+    temp_images = []
+    for url in image_urls:
+        img = download_image_from_url(url)
+        temp_images.append(img)
+
+    # Ensure we have enough images
+    if len(temp_images) < total_symbols_needed:
+        return (
+            None,
+            f"Not enough images. Need {total_symbols_needed} but got {len(temp_images)}.",
+        )
+
+    # Create a generator instance
+    generator = DobbleGenerator(
+        symbols_per_card=symbols_per_card,
+        custom_images=temp_images[:total_symbols_needed],
+    )
+
+    # Generate the cards
+    cards, status = generator.generate_dobble_cards()
+
+    if not cards:
+        return None, status
+
+    # If num_cards is specified, randomly select that many cards
+    if num_cards and num_cards < len(cards):
+        cards = random.sample(cards, num_cards)
+
+    return cards, status
+
+
+# Function to draw a card as an image
+def draw_card_as_image(symbols, size=600):
+    from PIL import ImageDraw
+
+    card_image = Image.new("RGBA", (size, size), (255, 255, 255, 255))
+    draw = ImageDraw.Draw(card_image)
+
+    symbols_per_card = len(symbols)
+
+    # 🔧 LARGER SYMBOLS!
+    size_factor = (
+        0.33 if symbols_per_card <= 3 else 0.28 if symbols_per_card <= 5 else 0.24
+    )
+
+    # 🎯 Adjust radius to spread images more
+    radius = 0.35 if symbols_per_card <= 4 else 0.33
+
+    # Calculate positions
+    positions = []
+    sizes = []
+    for i in range(symbols_per_card):
+        angle = 2 * math.pi * i / symbols_per_card
+        x = 0.5 + radius * math.cos(angle)
+        y = 0.5 + radius * math.sin(angle)
+        positions.append((x, y))
+        sizes.append(size_factor)
+
+    # Randomize layout
+    rotations = [random.randint(0, 359) for _ in symbols]
+    combined = list(zip(positions, sizes))
+    random.shuffle(combined)
+    positions, sizes = zip(*combined)
+
+    # Draw symbols
+    for i, symbol in enumerate(symbols):
+        rel_x, rel_y = positions[i]
+        symbol_size = int(size * sizes[i])
+        center_x = int(rel_x * size)
+        center_y = int(rel_y * size)
+
+        rotated = symbol.rotate(rotations[i], expand=True)
+        resized = rotated.resize((symbol_size, symbol_size), Image.LANCZOS)
+
+        paste_x = center_x - symbol_size // 2
+        paste_y = center_y - symbol_size // 2
+
+        mask = resized.split()[3] if resized.mode == "RGBA" else None
+        card_image.paste(resized, (paste_x, paste_y), mask)
+
+    return card_image
+
+
+def play_game(game_id):
+    st.title("Play Dobble!")
+
+    # Session state initialization
+    if "game_cards" not in st.session_state:
+        st.session_state.game_cards = None
+    if "pair_index" not in st.session_state:
+        st.session_state.pair_index = 0
+    if "card_pairs" not in st.session_state:
+        st.session_state.card_pairs = []
+
+    # Firebase setup
+    try:
+        storage, db = initialize_firebase()
+    except Exception as e:
+        st.error(f"Failed to initialize Firebase: {str(e)}")
+        return
+
+    try:
+        game_data = db.child("games").child(game_id).get().val()
+        if not game_data:
+            st.error(f"Game not found with ID: {game_id}")
+            return
+
+        st.write(f"### {game_data['title']}")
+        st.write(f"Symbols per card: {game_data['symbols_per_card']}")
+    except Exception as e:
+        st.error(f"Error loading game data: {str(e)}")
+        return
+
+    # Generate cards once
+    if st.session_state.game_cards is None:
+        with st.spinner("Generating cards..."):
+            cards, status = generate_game_cards(game_data)
+            if not cards:
+                st.error(f"Failed to generate cards: {status}")
+                return
+            st.session_state.game_cards = cards
+            indices = list(range(len(cards)))
+            st.session_state.card_pairs = list(itertools.combinations(indices, 2))
+            random.shuffle(st.session_state.card_pairs)
+            st.session_state.pair_index = 0
+
+    # Handle out-of-bounds
+    if st.session_state.pair_index >= len(st.session_state.card_pairs):
+        st.warning("All pairs have been shown!")
+        return
+
+    card1_idx, card2_idx = st.session_state.card_pairs[st.session_state.pair_index]
+    card1_symbols = st.session_state.game_cards[card1_idx]
+    card2_symbols = st.session_state.game_cards[card2_idx]
+
+    # Draw cards
+    with st.spinner("Drawing cards..."):
+        card1_img = draw_card_as_image(card1_symbols)
+        card2_img = draw_card_as_image(card2_symbols)
+
+    # Detect common symbol
+    common_symbol = next(
+        (s1 for s1 in card1_symbols for s2 in card2_symbols if similar_images(s1, s2)),
+        None,
+    )
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.image(card1_img, use_column_width=True)
+        st.markdown("#### Card 1")
+    with col2:
+        st.image(card2_img, use_column_width=True)
+        st.markdown("#### Card 2")
+
+    if st.button("Show Hint", key="show_hint"):
+        if common_symbol:
+            buf = io.BytesIO()
+            common_symbol.save(buf, format="PNG")
+            st.image(buf.getvalue(), width=100)
+        else:
+            st.warning("No common symbol found.")
+
+    if st.button("Next Cards", key="next_cards"):
+        st.session_state.pair_index += 1
+        st.experimental_rerun()
+
+    if st.button("Back to Main App", key="back_button"):
+        st.session_state.clear()
+        st.experimental_set_query_params()
+        st.experimental_rerun()
+
+
 # Streamlit app
 def main():
     st.set_page_config(page_title="Dobble Card Generator", layout="centered")
 
-    st.title("Dobble Card Generator")
-    st.write("Create custom Dobble (Spot It) cards to print yourself!")
+    # Check for URL parameters - if game_id is present, go to play mode
+    query_params = st.experimental_get_query_params()
+    mode = query_params.get("mode", ["main"])[0]
+    game_id = query_params.get("game_id", [None])[0]
 
-    # Mode selection
-    mode = st.radio(
-        "Choose card type",
-        ["Default Shapes and Colors", "Custom Images"],
-        index=0,
-    )
+    if mode == "play" and game_id:
+        play_game(game_id)
+        return
 
-    use_custom_images = mode == "Custom Images"
+    # Check and install dependencies if needed
+    try:
+        check_and_install_dependencies()
+    except Exception as e:
+        st.error(f"Failed to install dependencies: {str(e)}")
+        st.stop()
 
-    # Custom images section
-    uploaded_images = []
-    if use_custom_images:
-        st.write("### Upload Custom Images")
+    # Initialize Firebase
+    try:
+        storage, db = initialize_firebase()
+    except Exception as e:
+        st.error(f"Failed to initialize Firebase: {str(e)}")
+        st.error(
+            "Make sure you have set up Firebase Realtime Database and Storage correctly."
+        )
+        st.stop()
+
+    # Create tabs
+    tab1, tab2 = st.tabs(["Create New Game", "Saved Games"])
+
+    with tab1:
+        st.title("Dobble Card Generator")
+        st.write("Create custom Dobble (Spot It) cards with your own images!")
+
+        # Custom images section
+        uploaded_images = []
+        st.write("### Upload Your Images")
         st.write(
             "For the best results, upload square images with transparent backgrounds."
         )
 
         # Calculate how many images are needed
-        col1, col2 = st.columns(2)
-        with col1:
-            symbols_per_card = st.selectbox(
-                "Symbols Per Card",
-                options=[3, 4, 6, 8, 12],
-                index=2,  # Default to 6 symbols per card
-            )
+        symbols_per_card = st.selectbox(
+            "Symbols Per Card",
+            options=[3, 4, 6, 8, 12],
+            index=2,  # Default to 6 symbols per card
+        )
 
         order = symbols_per_card - 1
         total_symbols_needed = order**2 + order + 1
@@ -484,7 +739,6 @@ def main():
                 st.success(
                     f"You've uploaded {len(uploaded_images)} images. That's enough to generate your cards!"
                 )
-
             # Show the images in a grid
             cols = st.columns(5)  # 5 images per row
             for i, img in enumerate(uploaded_images[:15]):  # Show just the first 15
@@ -498,90 +752,173 @@ def main():
             if len(uploaded_images) > 15:
                 st.write(f"... and {len(uploaded_images) - 15} more images")
 
-    # Create a form for user input
-    with st.form("dobble_form"):
-        if not use_custom_images:
-            col1, col2 = st.columns(2)
-            with col1:
-                symbols_per_card = st.selectbox(
-                    "Symbols Per Card",
-                    options=[3, 4, 6, 8, 12],
-                    index=2,  # Default to 6 symbols per card
-                )
+        # Create a form for user input
+        with st.form("dobble_form"):
+            output_filename = st.text_input("Output Filename", value="dobble_cards.pdf")
 
-        col1, col2 = st.columns(2)
-        with col1:
-            cards_per_row = st.number_input(
-                "Cards Per Row", min_value=1, max_value=4, value=2, step=1
-            )
+            # Add a submit button
+            submit_button = st.form_submit_button("Generate Cards")
 
-        with col2:
-            cards_per_col = st.number_input(
-                "Cards Per Column", min_value=1, max_value=4, value=2, step=1
-            )
+        # Add a title field
+        game_title = st.text_input(
+            "Game Title",
+            value=f"Dobble Game {datetime.datetime.now().strftime('%Y-%m-%d')}",
+        )
 
-        output_filename = st.text_input("Output Filename", value="dobble_cards.pdf")
-
-        # Add a submit button
-        submit_button = st.form_submit_button("Generate Cards")
-
-    # Generate the cards when the user submits the form
-    if submit_button:
-        # Check if we have enough images when using custom images
-        if use_custom_images:
-            order = symbols_per_card - 1
-            total_symbols_needed = order**2 + order + 1
-
+        # Generate the cards when the user submits the form
+        if submit_button:
+            # Check if we have enough images
             if len(uploaded_images) < total_symbols_needed:
                 st.error(
                     f"Not enough images! You need at least {total_symbols_needed} images, but you've only uploaded {len(uploaded_images)}."
                 )
                 return
 
-        with st.spinner("Generating Dobble cards..."):
-            # Create a temporary file for the PDF
-            temp_dir = tempfile.gettempdir()
-            output_path = os.path.join(temp_dir, output_filename)
+            with st.spinner("Generating and saving your Dobble game..."):
+                # Create a unique game ID
+                game_id = str(uuid.uuid4())
 
-            try:
-                # Generate the cards
-                generator = DobbleGenerator(
-                    output_pdf=output_path,
-                    cards_per_row=cards_per_row,
-                    cards_per_col=cards_per_col,
-                    symbols_per_card=symbols_per_card,
-                    use_custom_images=use_custom_images,
-                    custom_images=uploaded_images if use_custom_images else None,
-                )
-
-                success, message = generator.create_dobble_pdf()
-
-                if success:
-                    st.success(message)
-
-                    # Create a download link for the PDF
-                    download_link = get_pdf_download_link(output_path, output_filename)
-                    st.markdown(download_link, unsafe_allow_html=True)
-
-                    # Show card info
-                    total_cards = symbols_per_card**2 - symbols_per_card + 1
-                    st.info(f"Total cards in the deck: {total_cards}")
-
-                    # Show some tips
-                    with st.expander("Printing Tips"):
-                        st.write(
-                            """
-                        - Print on cardstock for durability
-                        - Cut out the cards carefully
-                        - For best results, laminate the cards after cutting
-                        - For a more portable game, print on smaller paper or reduce scale
-                        """
+                # Save images to Firebase and collect URLs
+                image_urls = []
+                for i, img in enumerate(uploaded_images):
+                    try:
+                        url = save_image_to_firebase(
+                            storage, img, game_id, f"image_{i}"
                         )
-                else:
-                    st.error(message)
+                        image_urls.append(url)
+                    except Exception as e:
+                        st.error(f"Error saving image {i}: {str(e)}")
+                        return
 
-            except Exception as e:
-                st.error(f"Error generating cards: {str(e)}")
+                # Create metadata for the game
+                total_cards = symbols_per_card**2 - symbols_per_card + 1
+                game_data = {
+                    "id": game_id,
+                    "title": game_title,
+                    "created_at": datetime.datetime.now().isoformat(),
+                    "symbols_per_card": symbols_per_card,
+                    "total_symbols_needed": total_symbols_needed,
+                    "total_cards": total_cards,
+                    "image_urls": image_urls,
+                }
+
+                # Save game metadata to Firebase
+                try:
+                    save_game_to_firebase(db, game_id, game_data)
+                    st.success(f"Game '{game_title}' saved successfully!")
+
+                    # Create a temporary file for the PDF
+                    temp_dir = tempfile.gettempdir()
+                    output_path = os.path.join(temp_dir, output_filename)
+
+                    # Generate the cards
+                    generator = DobbleGenerator(
+                        output_pdf=output_path,
+                        symbols_per_card=symbols_per_card,
+                        custom_images=uploaded_images,
+                    )
+
+                    success, message = generator.create_dobble_pdf()
+
+                    if success:
+                        # Create a download button for the PDF
+                        download_button = get_binary_file_downloader_html(
+                            output_path, output_filename
+                        )
+                        st.markdown(download_button, unsafe_allow_html=True)
+
+                        # Show card info
+                        st.info(f"Total cards in the deck: {total_cards}")
+                    else:
+                        st.error(message)
+
+                except Exception as e:
+                    st.error(f"Error saving game data: {str(e)}")
+
+    with tab2:
+        st.title("Saved Games")
+        st.write("View and download your previously created Dobble games.")
+
+        # Refresh button
+        if st.button("Refresh Games List"):
+            st.experimental_rerun()
+
+        # Get all saved games
+        try:
+            saved_games = get_saved_games(db)
+
+            if not saved_games:
+                st.info("No saved games found. Create a new game first!")
+            else:
+                # Sort games by creation date (newest first)
+                saved_games.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+
+                # Display games in a table
+                st.write(f"Found {len(saved_games)} saved games:")
+
+                for game in saved_games:
+                    with st.expander(f"{game['title']} ({game['created_at'][:10]})"):
+                        st.write(f"**Symbols per card:** {game['symbols_per_card']}")
+                        st.write(f"**Total cards:** {game['total_cards']}")
+
+                        # Display a few sample images if available
+                        if "image_urls" in game and game["image_urls"]:
+                            st.write("**Sample images:**")
+                            cols = st.columns(5)
+                            for i, url in enumerate(game["image_urls"][:5]):
+                                with cols[i % 5]:
+                                    st.image(url, width=60)
+
+                            play_url = f"?mode=play&game_id={game['id']}"
+                            st.markdown(
+                                f"""
+                                <a href="{play_url}" target="_self">
+                                    <button style="background-color: #4CAF50; color: white; padding: 8px 16px; 
+                                    border: none; border-radius: 4px; cursor: pointer; font-size: 16px;">
+                                        Play Game
+                                    </button>
+                                </a>
+                                """,
+                                unsafe_allow_html=True,
+                            )
+
+                            if st.button(
+                                f"Generate and Download PDF",
+                                key=f"download_{game['id']}",
+                            ):
+                                with st.spinner("Generating PDF..."):
+                                    pdf_path, pdf_filename = (
+                                        generate_pdf_for_saved_game(storage, game)
+                                    )
+                                    if pdf_path:
+                                        download_button = (
+                                            get_binary_file_downloader_html(
+                                                pdf_path, pdf_filename
+                                            )
+                                        )
+                                        st.markdown(
+                                            download_button, unsafe_allow_html=True
+                                        )
+                                    else:
+                                        st.error("Failed to generate PDF")
+
+                            # Delete game and images
+                            if st.button(f"Delete Game", key=f"delete_{game['id']}"):
+                                with st.spinner("Deleting game and images..."):
+                                    success, msg = delete_game_from_firebase(
+                                        storage,
+                                        db,
+                                        game["id"],
+                                        game.get("image_urls", []),
+                                    )
+                                    if success:
+                                        st.success(msg)
+                                        st.experimental_rerun()
+                                    else:
+                                        st.error(msg)
+
+        except Exception as e:
+            st.error(f"Error loading saved games: {str(e)}")
 
 
 if __name__ == "__main__":

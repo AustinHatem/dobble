@@ -1,2 +1,6 @@
-streamlit
-reportlab
+streamlit>=1.26.0
+Pillow>=9.0.0
+reportlab>=3.6.0
+pyrebase4>=4.5.0
+requests>=2.28.0
+uuid>=1.30
