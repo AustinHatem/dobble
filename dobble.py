@@ -15,12 +15,25 @@ import base64
 import pyrebase
 import itertools
 
+# Try to load environment variables
 try:
     from dotenv import load_dotenv
 
     load_dotenv()
 except ImportError:
     pass
+
+# Set up a flag to track if Firebase is available
+FIREBASE_AVAILABLE = False
+
+# Try to import pyrebase with better error handling
+try:
+    import pyrebase
+
+    FIREBASE_AVAILABLE = True
+except ImportError as e:
+    st.error(f"Error importing pyrebase: {str(e)}")
+    st.info("Some features requiring Firebase will be disabled.")
 
 
 def get_env(key: str) -> str:
@@ -39,6 +52,36 @@ def get_env(key: str) -> str:
         if not value:
             st.error(f"❌ Missing environment variable: {key}")
         return value or ""
+
+
+def initialize_firebase():
+    """Initialize Firebase with better error handling"""
+    if not FIREBASE_AVAILABLE:
+        st.error("Firebase functionality is not available due to import errors.")
+        return None, None
+
+    try:
+        firebaseConfig = {
+            "apiKey": get_env("FIREBASE_API_KEY"),
+            "authDomain": get_env("FIREBASE_AUTH_DOMAIN"),
+            "projectId": get_env("FIREBASE_PROJECT_ID"),
+            "storageBucket": get_env("FIREBASE_STORAGE_BUCKET"),
+            "messagingSenderId": get_env("FIREBASE_MESSAGING_SENDER_ID"),
+            "appId": get_env("FIREBASE_APP_ID"),
+            "measurementId": get_env("FIREBASE_MEASUREMENT_ID"),
+            "databaseURL": get_env("FIREBASE_DATABASE_URL"),
+        }
+
+        firebase = pyrebase.initialize_app(firebaseConfig)
+        auth = firebase.auth()
+        auth.sign_in_anonymous()
+        storage = firebase.storage()
+        db = firebase.database()
+
+        return storage, db
+    except Exception as e:
+        st.error(f"Failed to initialize Firebase: {str(e)}")
+        return None, None
 
 
 class DobbleGenerator:
