@@ -20,6 +20,16 @@ try:
 except ImportError:
     pass
 
+# Add pillow_heif for HEIC support
+try:
+    from pillow_heif import register_heif_opener
+
+    register_heif_opener()
+except ImportError:
+    st.warning(
+        "HEIC support requires the pillow_heif library. Install with: `pip install pillow-heif`"
+    )
+
 
 class DobbleGenerator:
     def __init__(
@@ -287,26 +297,31 @@ def get_binary_file_downloader_html(pdf_path, filename):
 # Function to preprocess uploaded images
 def preprocess_image(uploaded_file):
     """Process the uploaded image to prepare it for the Dobble card"""
-    image = Image.open(uploaded_file)
+    try:
+        image = Image.open(uploaded_file)
 
-    # Convert to RGBA if not already
-    if image.mode != "RGBA":
-        image = image.convert("RGBA")
+        # Convert to RGBA if not already
+        if image.mode != "RGBA":
+            image = image.convert("RGBA")
 
-    # Make the image square by cropping or padding
-    width, height = image.size
-    size = max(width, height)
-    new_img = Image.new("RGBA", (size, size), (255, 255, 255, 0))
+        # Make the image square by cropping or padding
+        width, height = image.size
+        size = max(width, height)
+        new_img = Image.new("RGBA", (size, size), (255, 255, 255, 0))
 
-    # Paste the original image centered in the new square image
-    paste_x = (size - width) // 2
-    paste_y = (size - height) // 2
-    new_img.paste(image, (paste_x, paste_y))
+        # Paste the original image centered in the new square image
+        paste_x = (size - width) // 2
+        paste_y = (size - height) // 2
+        new_img.paste(image, (paste_x, paste_y))
 
-    # Resize to a standard size for consistency
-    new_img = new_img.resize((300, 300), Image.LANCZOS)
+        # Resize to a standard size for consistency
+        new_img = new_img.resize((300, 300), Image.LANCZOS)
 
-    return new_img
+        return new_img
+
+    except Exception as e:
+        st.error(f"Error processing image: {str(e)}")
+        return None
 
 
 # Streamlit app
@@ -374,10 +389,18 @@ def main():
     st.write(f"You need to upload at least **{total_symbols_needed}** images.")
     st.write(f"This will generate a total of **{total_cards}** cards.")
 
-    # Create file uploader
+    # Create file uploader with HEIC support added
     uploaded_files = st.file_uploader(
         "Upload your images",
-        type=["png", "jpg", "jpeg", "gif", "bmp"],
+        type=[
+            "png",
+            "jpg",
+            "jpeg",
+            "gif",
+            "bmp",
+            "heic",
+            "heif",
+        ],  # Added HEIC and HEIF formats
         accept_multiple_files=True,
     )
 
@@ -385,7 +408,8 @@ def main():
         # Process the images
         for file in uploaded_files:
             processed_img = preprocess_image(file)
-            uploaded_images.append(processed_img)
+            if processed_img:  # Only add successfully processed images
+                uploaded_images.append(processed_img)
 
         # Show how many images are uploaded
         if len(uploaded_images) < total_symbols_needed:
