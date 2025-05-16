@@ -24,16 +24,21 @@ except ImportError:
 
 
 def get_env(key: str) -> str:
-    # Only access st.secrets if .streamlit/secrets.toml exists
-    secrets_path = os.path.join(os.getcwd(), ".streamlit", "secrets.toml")
-    if os.path.exists(secrets_path):
-        return st.secrets.get(key)
-
-    # Otherwise load from .env
-    value = os.getenv(key)
-    if not value:
-        st.error(f"❌ Missing environment variable: {key}")
-    return value
+    """Get environment variable with fallback to Streamlit secrets."""
+    # Check if we can access st.secrets
+    try:
+        if key.startswith("FIREBASE_"):
+            # Convert FIREBASE_API_KEY to api_key format for nested secrets
+            firebase_key = key[9:].lower()
+            return st.secrets["firebase"][firebase_key]
+        else:
+            return st.secrets[key]
+    except (KeyError, AttributeError):
+        # Fallback to environment variables
+        value = os.getenv(key)
+        if not value:
+            st.error(f"❌ Missing environment variable: {key}")
+        return value or ""
 
 
 class DobbleGenerator:
