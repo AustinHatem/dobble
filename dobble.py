@@ -15,6 +15,11 @@ import base64
 import pyrebase
 import itertools
 
+# dobble.py
+import os
+
+os.system("pip install -r requirements_prod.txt")
+
 # Try to load environment variables
 try:
     from dotenv import load_dotenv
